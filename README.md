@@ -90,69 +90,93 @@ Pick one, type it into @BotFather when creating the bot (`/newbot` → it'll ask
 username ending in "bot"), and if it's taken try a small variation.
 
 
-| Feature | Command / Button |
+## Features implemented
+
+Bottom persistent menu (before matching): **⚡ Find a Partner / 👩 Match with girls / 👦 Match with boys / 👤 My Profile / ⚙️ Settings / 💎 Premium**
+While in a chat, the menu switches to: **Next / Stop / Gift**
+
+| Feature | Command |
 |---|---|
 | Register (name, gender, age, location, interests, bio) | `/start` |
-| Find any partner | 🔍 Find a partner |
-| Find specific gender | 💑 Search by gender → 👨 Male / 👩 Female |
-| Interest-based match | 💘 Flirt chat (matches users sharing ≥1 interest tag) |
-| Choose partner's gender **(Premium only)** | 💑 Search by gender → 👨 Male / 👩 Female |
-| View own profile + rating | 👤 My profile or `/profile` |
-| Skip current partner | `/skip` |
-| End chat / stop searching | `/stop` |
-| Share your Telegram username with current partner | `/link` |
-| View partner's full info — **name, age, bio** — **(Premium only)** | `/info` |
-| Request premium (DMs owner) | `/premium` |
-| Get Premium free by referring friends | `/refer` |
-| Owner approves premium | `/grant <user_id>` (owner only) |
-| Rate partner after chat | 👍 / 👎 buttons |
-| Report abusive partner | 🚩 Report button |
+| Find any partner | `/search` or 🔍 Find a partner |
+| End chat & find new match | `/next` or ⏭ Next |
+| End chat / cancel search | `/stop` or ⏹ Stop |
+| Cancel current action | `/cancel` |
+| Choose partner's gender **(VIP only)** | 👩 Match with girls / 👦 Match with boys, or `/filter` |
+| Interest-based match | ⚙️ Settings → 💘 Flirt Chat |
+| Settings menu (Flirt Chat, Media Protection, Referral, Rules) | ⚙️ Settings |
+| Share your Telegram username with partner | `/link` |
+| View partner's full info — name, age, bio **(VIP only)** | `/info` |
+| Reconnect with your last chat partner **(VIP only)** | `/reopen` |
+| Translate a replied-to message to your language | `/translate` |
+| Send/receive a Truth question (shared with partner if in chat) | `/truth` |
+| Send/receive a Dare challenge (shared with partner if in chat) | `/dare` |
+| Send a virtual gift to your partner | 🎁 Gift |
+| Show main menu again | `/menu` |
+| Search filter (choose gender) | `/filter` |
+| Toggle Media Protection (blur + block forwarding, all media) | `/hide` |
+| Send your next photo/video as one-time view (auto-deletes in 30s) | `/once` |
+| Read community terms of use | `/rules` |
+| VIP pricing menu (Stars) + free-via-referral option | `/vip` (alias `/premium`) |
+| Get your referral link | `/refer` |
+| Owner: grant permanent VIP | `/grant <user_id>` |
+| Rate partner after chat | 👍 Like / 👎 Dislike buttons |
+| Report abusive partner | 🚫 Report button |
 | Auto-ban after repeated reports | automatic (3 reports by default) |
 
-## Premium gating
+## Media Protection
 
-Non-premium users can only:
-- Find a partner (any gender) or use Flirt chat (interest-based)
-- See ratings and common interests on the match card
+- **`/hide`** — toggles a persistent setting. When ON, every photo/video you send to a
+  partner is delivered blurred (Telegram's native "spoiler" effect — tap to reveal) and
+  protected from forwarding/saving.
+- **`/once`** — a one-shot version: your very next photo/video is sent blurred, and the
+  bot automatically deletes it from your partner's chat **30 seconds** after delivery.
+  This uses a timer, not a true "view-once" tap detector — the Bot API doesn't expose
+  when a spoiler photo is actually opened, so the 30s window is the closest reliable
+  equivalent. Adjust the delay in the `_delete_after(...)` call inside `relay_message()`.
 
-Premium unlocks:
-- **Search by gender** — pick Male or Female specifically
-- **`/info`** — full partner profile: real name, age, location, bio
+## Partner-left flow
 
-Premium can be unlocked two ways:
-1. Owner manually approves via `/grant <user_id>` (triggered by `/premium`)
-2. **Referral**: user sends `/refer` for their personal invite link
-   (`https://t.me/<bot>?start=ref_<user_id>`). Once 2 people join through their link
-   and complete registration, Premium is granted automatically — change the
-   `REFERRALS_FOR_PREMIUM` constant in `bot.py` to adjust the count.
-
-## Match card (what users see)
+When one side ends the chat, the **other** person sees:
 
 ```
-🎭 Start chatting!
+🔴 Your partner has left the chat
 
-Info: premium required
-Ratings: 428 👍  4896 👎
-
-Common interests: Communication, Friendship, Relationship
-
-/link - share link
-/stop - end chat
+🌟 Rate your partner so I can find better matches for you.
+[👍 Like] [👎 Dislike]
+[🚫 Report]
 ```
+
+## VIP (Premium)
+
+Two ways to unlock VIP:
+
+1. **Buy with Telegram Stars** — `/vip` shows 4 pricing tiers (1/3/6/12 months). Tapping a
+   tier sends a native Telegram Stars invoice. Stars payments go **directly to your own
+   Telegram account balance** as the bot owner — no extra payment setup needed. Real-money
+   value and cash-out are handled by Telegram itself (Settings → Stars in the Telegram app).
+   Adjust prices/durations in the `VIP_TIERS` list in `bot.py`.
+2. **Refer friends for free** — `/refer` gives a personal invite link. Every
+   `REFERRALS_FOR_PREMIUM` (default 2) successful referrals grants the referrer
+   `REFERRAL_PREMIUM_HOURS` (default **1 hour**) of VIP automatically. Both constants are
+   at the top of `bot.py`.
+
+VIP unlocks: Search by gender, `/info` (full partner profile), `/reopen` (reconnect with
+last partner), and a free rating reset button inside `/vip`.
 
 ## What's anonymized
 
-Real name is **never** shown to a partner. Only registered profile fields (age, location,
-interests) and rating counts appear on the match card. Full "Info" (bio) requires premium
-and is fetched with `/info`. A user can voluntarily reveal their Telegram username to their
-current partner with `/link`.
+Real name is **never** shown to a partner by default. Only ratings and shared interests
+appear on the match card. Full profile (name, age, location, bio) is only visible via
+`/info`, and only to VIP users.
 
 ## Notes / next steps you may want
 
-- **Payments**: `/premium` currently just pings you (the owner) to manually `/grant` access.
-  If you want auto-payments, you'd need to integrate Telegram Payments API or a UPI/Razorpay
-  webhook — happy to add that next if you want it.
+- **Stars payouts**: Telegram Stars revenue accrues to the bot owner's Telegram account —
+  check Telegram's official docs for current withdrawal/conversion terms.
 - **Scale**: SQLite is fine for a few hundred concurrent users. For bigger scale, swap to
   PostgreSQL later — the queries are simple enough to port directly.
 - **Moderation**: report threshold (`REPORTS_TO_AUTOBAN`) is set to 3 in `bot.py`, change as needed.
 - **Media**: photos/videos/voice notes/stickers are relayed too (via `copy_message`), not just text.
+- **Translation**: `/translate` uses the free `deep-translator` package (Google Translate backend);
+  no API key needed, but it depends on an external service being reachable from your host.
