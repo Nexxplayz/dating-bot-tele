@@ -15,6 +15,7 @@ Setup:
 """
 
 import os
+import html as html_lib
 import random
 import asyncio
 import sqlite3
@@ -55,6 +56,21 @@ except ImportError:
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "PUT_YOUR_BOT_TOKEN_HERE")
 OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
 DB_PATH = os.environ.get("DB_PATH", "dating_bot.db")
+
+# Optional "click before you can start" gate. Leave GATE_URL empty to disable.
+# NOTE: this cannot cryptographically prove the user visited the link — Telegram's
+# Bot API has no way to confirm that. The URL button does open a real browser tab
+# (which counts as a genuine click for most affiliate trackers), and the user then
+# self-reports by tapping Continue. It's a nudge, not a guarantee.
+GATE_URL = os.environ.get("GATE_URL", "")
+GATE_IMAGE_URL = os.environ.get("GATE_IMAGE_URL", "")  # optional banner image for the gate
+GATE_BUTTON_TEXT = os.environ.get("GATE_BUTTON_TEXT", "🔗 Visit Link")
+GATE_CONTINUE_TEXT = os.environ.get("GATE_CONTINUE_TEXT", "✅ I've visited — Continue")
+GATE_MESSAGE = os.environ.get(
+    "GATE_MESSAGE",
+    "👋 Before we get started, please check this out:\n\n"
+    "Tap the button below, then come back and tap Continue.",
+)
 
 REPORTS_TO_AUTOBAN = 3
 REFERRALS_FOR_PREMIUM = 2
@@ -190,6 +206,11 @@ def init_db():
             partner_id INTEGER
         )
     """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS gate_passed (
+            user_id INTEGER PRIMARY KEY
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -314,6 +335,20 @@ VIP_INTRO_TEXT = (
 # ----------------------------------------------------------------------------
 # REGISTRATION FLOW
 # ----------------------------------------------------------------------------
+WELCOME_TEXT = (
+    "Welcome to Anonymous Dating Bot! 🎭\n\n"
+    "Your identity stays private — partners never see your real name.\n\n"
+    "Let's set up your profile. What's your name? (only used internally, never shown to others)"
+)
+
+
+def has_passed_gate(user_id):
+    conn = db()
+    row = conn.execute("SELECT 1 FROM gate_passed WHERE user_id=?", (user_id,)).fetchone()
+    conn.close()
+    return row is not None
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if is_registered(user_id):
@@ -330,11 +365,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             pass
 
-    await update.message.reply_text(
-        "Welcome to Anonymous Dating Bot! 🎭\n\n"
-        "Your identity stays private — partners never see your real name.\n\n"
-        "Let's set up your profile. What's your name? (only used internally, never shown to others)"
-    )
+    if GATE_URL and not has_passed_gate(user_id):
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(GATE_BUTTON_TEXT, url=GATE_URL)],
+            [InlineKeyboardButton(GATE_CONTINUE_TEXT, callback_data="gate_continue")],
+        ])
+        if GATE_IMAGE_URL:
+            await context.bot.send_photo(
+                chat_id=user_id, photo=GATE_IMAGE_URL, caption=GATE_MESSAGE, reply_markup=keyboard
+            )
+        else:
+            await update.message.reply_text(GATE_MESSAGE, reply_markup=keyboard)
+        return ConversationHandler.END
+
+    await update.message.reply_text(WELCOME_TEXT)
+    return NAME
+
+
+async def gate_continue_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    conn = db()
+    conn.execute("INSERT OR IGNORE INTO gate_passed (user_id) VALUES (?)", (user_id,))
+    conn.commit()
+    conn.close()
+    await query.edit_message_text("Thanks! ✅")
+    await context.bot.send_message(chat_id=user_id, text=WELCOME_TEXT)
     return NAME
 
 
@@ -517,17 +574,34 @@ async def begin_match(context, user_a, user_b):
 
     for uid, partner in ((user_a, user_b_row), (user_b, user_a_row)):
         vip_badge = " 👑" if partner["premium"] else ""
+
+        if is_premium(uid):
+            safe_name = html_lib.escape(partner["name"] or "Unknown")
+            safe_location = html_lib.escape(partner["location"] or "Unknown")
+            safe_bio = html_lib.escape(partner["bio"] or "No bio added yet.")
+            info_block = (
+                "Info (tap to reveal):\n"
+                f"<tg-spoiler>Name: {safe_name}\n"
+                f"Gender: {partner['gender'].title()}\n"
+                f"Age: {partner['age']}\n"
+                f"Location: {safe_location}\n"
+                f"Bio: {safe_bio}</tg-spoiler>\n"
+            )
+        else:
+            info_block = "Info: premium required (use /vip to unlock)\n"
+
         card = (
             f"🎭 Start chatting!{vip_badge}\n\n"
-            "Info: premium required\n"
+            f"{info_block}"
             f"Ratings: {partner['thumbs_up']} 👍  {partner['thumbs_down']} 👎\n\n"
             f"Common interests: {common_text}\n\n"
-            "/info - view full profile (VIP)\n"
             "/link - share link\n"
             "/next - skip to new partner\n"
             "/stop - end chat"
         )
-        await context.bot.send_message(chat_id=uid, text=card, reply_markup=in_chat_keyboard())
+        await context.bot.send_message(
+            chat_id=uid, text=card, parse_mode="HTML", reply_markup=in_chat_keyboard()
+        )
 
 
 async def search_partner(context, user_id, mode):
@@ -674,29 +748,6 @@ async def link_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await context.bot.send_message(chat_id=partner_id, text=f"🔗 Your partner shared their profile: @{username}")
     await update.message.reply_text("Your profile link has been shared with your partner.")
-
-
-async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    row = user_in_chat(user_id)
-    if not row:
-        await update.message.reply_text("You're not in a chat right now.")
-        return
-    if not is_premium(user_id):
-        await update.message.reply_text("🔒 Info: premium required. Use /vip to unlock.")
-        return
-    partner = get_user(row["partner_id"])
-    bio = partner["bio"] or "This user hasn't added a bio yet."
-    interests = ", ".join(user_interests(partner)) or "None set"
-    await update.message.reply_text(
-        f"ℹ️ Partner Info\n\n"
-        f"Name: {partner['name']}\n"
-        f"Gender: {partner['gender'].title()}\n"
-        f"Age: {partner['age']}\n"
-        f"Location: {partner['location']}\n"
-        f"Bio: {bio}\n"
-        f"Interests: {interests}"
-    )
 
 
 async def reopen_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -911,6 +962,80 @@ async def grant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     grant_premium(target_id, hours=None)
     await update.message.reply_text(f"✅ Permanent VIP granted to {target_id}")
     await context.bot.send_message(chat_id=target_id, text="🎉 VIP activated! Use /vip anytime to see your perks.")
+
+
+async def promo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Owner-only: build a shareable promo message with a button that opens/starts the bot.
+    Usage: /promo <message text> | <button label (optional)>
+    Send this yourself into groups/channels to attract new users, or reply to it with
+    /broadcast to send it to your existing users too."""
+    if update.effective_user.id != OWNER_ID:
+        return
+    raw = update.message.text.partition(" ")[2].strip()
+    if not raw:
+        await update.message.reply_text(
+            "Usage: /promo <message text> | <button label (optional)>\n\n"
+            "Example:\n/promo 💖 Someone liked your profile! Open it to see who: | 👀 View Liker"
+        )
+        return
+    if "|" in raw:
+        text, _, button_label = raw.partition("|")
+        text = text.strip()
+        button_label = button_label.strip() or "👀 View"
+    else:
+        text = raw
+        button_label = "👀 View"
+
+    bot_username = (await context.bot.get_me()).username
+    link = f"https://t.me/{bot_username}?start=promo"
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(button_label, url=link)]])
+    await update.message.reply_text(text, reply_markup=keyboard)
+
+
+async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Owner-only: /broadcast <message> — sends a message (text, link, promo, etc.)
+    to every registered user. Reply to a photo/video with /broadcast to send that media."""
+    if update.effective_user.id != OWNER_ID:
+        return
+
+    conn = db()
+    user_ids = [row["user_id"] for row in conn.execute("SELECT user_id FROM users").fetchall()]
+    conn.close()
+
+    sent, failed = 0, 0
+
+    if update.message.reply_to_message:
+        # broadcast the replied-to message (works for photos/videos/text with formatting)
+        await update.message.reply_text(f"📢 Broadcasting to {len(user_ids)} users...")
+        for uid in user_ids:
+            try:
+                await context.bot.copy_message(
+                    chat_id=uid,
+                    from_chat_id=update.effective_chat.id,
+                    message_id=update.message.reply_to_message.message_id,
+                )
+                sent += 1
+            except Exception:
+                failed += 1
+            await asyncio.sleep(0.05)  # stay under Telegram's rate limits
+    else:
+        text = update.message.text.partition(" ")[2].strip()
+        if not text:
+            await update.message.reply_text(
+                "Usage: /broadcast <message>\n"
+                "(or reply to a photo/video/message with /broadcast to send that instead)"
+            )
+            return
+        await update.message.reply_text(f"📢 Broadcasting to {len(user_ids)} users...")
+        for uid in user_ids:
+            try:
+                await context.bot.send_message(chat_id=uid, text=text)
+                sent += 1
+            except Exception:
+                failed += 1
+            await asyncio.sleep(0.05)
+
+    await update.message.reply_text(f"✅ Done. Sent: {sent} | Failed (bot blocked/inactive): {failed}")
 
 
 async def send_vip_invoice(context, chat_id, tier_index):
@@ -1178,7 +1303,6 @@ async def post_init(application):
         BotCommand("once", "Send next photo/video as one-time view"),
         BotCommand("rules", "Terms of use"),
         BotCommand("link", "Share your profile link"),
-        BotCommand("info", "View partner's full info (VIP)"),
         BotCommand("reopen", "Reconnect with your last partner (VIP)"),
         BotCommand("translate", "Translate a replied-to message"),
         BotCommand("truth", "Receive a Truth question"),
@@ -1193,7 +1317,10 @@ def main():
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
 
     reg_conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[
+            CommandHandler("start", start),
+            CallbackQueryHandler(gate_continue_cb, pattern="^gate_continue$"),
+        ],
         states={
             NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_name)],
             GENDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_gender)],
@@ -1212,7 +1339,6 @@ def main():
     app.add_handler(CommandHandler("cancel", generic_cancel_cmd))
     app.add_handler(CommandHandler("profile", profile_cmd))
     app.add_handler(CommandHandler("link", link_cmd))
-    app.add_handler(CommandHandler("info", info_cmd))
     app.add_handler(CommandHandler("reopen", reopen_cmd))
     app.add_handler(CommandHandler("translate", translate_cmd))
     app.add_handler(CommandHandler("truth", truth_cmd))
@@ -1221,6 +1347,8 @@ def main():
     app.add_handler(CommandHandler("premium", vip_cmd))
     app.add_handler(CommandHandler("refer", refer_cmd))
     app.add_handler(CommandHandler("grant", grant_cmd))
+    app.add_handler(CommandHandler("broadcast", broadcast_cmd))
+    app.add_handler(CommandHandler("promo", promo_cmd))
     app.add_handler(CommandHandler("menu", menu_cmd))
     app.add_handler(CommandHandler("filter", filter_cmd))
     app.add_handler(CommandHandler("hide", hide_cmd))
